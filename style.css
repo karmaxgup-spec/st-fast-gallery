@@ -1,29 +1,285 @@
+/* Fast Gallery viewer */
+
 #stfg-overlay {
+    --stfg-bg: #0b0c10;
+    --stfg-card: #171a22;
+    --stfg-card-hi: #222634;
+    --stfg-line: rgba(255, 255, 255, 0.07);
+    --stfg-text: #eceef5;
+    --stfg-muted: #8f98ab;
+    --stfg-accent: #8ba4ff;
+    --stfg-accent-soft: rgba(139, 164, 255, 0.16);
+
     position: fixed;
-    inset: 0;
-    z-index: 3000;
+    top: 0;
+    left: 0;
+    /* Size from the viewport, not inset: 0. SillyTavern gives <html> a perspective,
+       which makes it the containing block for fixed elements, and <html> is 0px tall,
+       so inset: 0 collapsed the overlay on phones. */
+    width: 100%;
+    height: 100vh;
+    height: 100dvh;
+    /* SillyTavern's top bar uses z-index 3005, so sit above it. */
+    z-index: 10000;
     display: flex;
     flex-direction: column;
-    padding: 8px;
     box-sizing: border-box;
-    background: rgba(0, 0, 0, 0.92);
+    color: var(--stfg-text);
+    background:
+        radial-gradient(1100px 520px at 0% -10%, rgba(92, 112, 220, 0.22), transparent 60%),
+        radial-gradient(900px 480px at 110% 110%, rgba(150, 80, 200, 0.16), transparent 55%),
+        var(--stfg-bg);
+    animation: stfg-fade-in 0.2s ease-out;
 }
 
+@keyframes stfg-fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+/* ---------- header ---------- */
+
 #stfg-overlay .stfg-bar {
+    position: sticky;
+    top: 0;
+    z-index: 2;
     display: flex;
-    justify-content: space-between;
     align-items: center;
-    padding: 4px 8px;
-    color: #fff;
+    gap: 16px;
+    padding: 14px 22px;
+    background: rgba(11, 12, 16, 0.72);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--stfg-line);
+}
+
+#stfg-overlay .stfg-heading {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    flex: 1;
+}
+
+#stfg-overlay .stfg-kicker {
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--stfg-accent);
+}
+
+#stfg-overlay .stfg-title {
+    font-size: 1.1rem;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+#stfg-overlay .stfg-count {
+    flex: none;
+    font-size: 0.8rem;
+    font-weight: 500;
+    padding: 5px 12px;
+    border-radius: 999px;
+    background: var(--stfg-accent-soft);
+    color: #c9d5ff;
 }
 
 #stfg-overlay .stfg-close {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 38px;
+    height: 38px;
+    border: 1px solid var(--stfg-line);
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--stfg-text);
+    font-size: 0.95rem;
     cursor: pointer;
+    transition: background 0.15s ease, transform 0.25s ease;
 }
+
+#stfg-overlay .stfg-close:hover {
+    background: rgba(255, 255, 255, 0.14);
+    transform: rotate(90deg);
+}
+
+#stfg-overlay .stfg-close:focus-visible {
+    outline: 2px solid var(--stfg-accent);
+    outline-offset: 2px;
+}
+
+/* ---------- grid ---------- */
 
 #stfg-grid {
     position: relative;
     flex: 1 1 auto;
     min-height: 0;
     overflow: auto;
+    padding: 18px 22px 28px;
+    box-sizing: border-box;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}
+
+/* Card: rounded, shadowed, lifts on hover. */
+#stfg-grid .nGY2GThumbnail {
+    border-radius: 14px;
+    overflow: hidden;
+    background: var(--stfg-card);
+    box-shadow: 0 1px 0 var(--stfg-line) inset, 0 8px 22px rgba(0, 0, 0, 0.35);
+    transition: transform 0.22s ease, box-shadow 0.22s ease;
+}
+
+#stfg-grid .nGY2GThumbnail:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 1px 0 var(--stfg-line) inset, 0 16px 34px rgba(0, 0, 0, 0.5);
+    z-index: 1;
+}
+
+/* Shimmer while the thumbnail is still loading. */
+#stfg-grid .stfg-card:not(.stfg-ready) {
+    background: linear-gradient(110deg, var(--stfg-card) 8%, var(--stfg-card-hi) 18%, var(--stfg-card) 33%);
+    background-size: 200% 100%;
+    animation: stfg-shimmer 1.3s linear infinite;
+}
+
+@keyframes stfg-shimmer {
+    to { background-position: -200% 0; }
+}
+
+/* Image itself: cover the card, gentle zoom on hover. */
+#stfg-grid .nGY2GThumbnailImage,
+#stfg-grid .nGY2GThumbnailImg {
+    border-radius: 14px;
+}
+
+#stfg-grid .nGY2GThumbnailImg {
+    object-fit: cover;
+    transition: opacity 0.35s ease, transform 0.4s ease;
+}
+
+#stfg-grid .nGY2GThumbnail:hover .nGY2GThumbnailImg {
+    transform: scale(1.05);
+}
+
+/* Failed files show a quiet fallback instead of a blank card. */
+#stfg-grid .stfg-broken::after {
+    content: '\f071';
+    font-family: 'Font Awesome 6 Free', 'Font Awesome 5 Free', FontAwesome;
+    font-weight: 900;
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    font-size: 1.6rem;
+    color: var(--stfg-muted);
+}
+
+/* Filename caption: a soft gradient band at the bottom of the card. */
+#stfg-grid .nGY2GThumbnailTitle {
+    padding: 22px 10px 8px;
+    font-size: 0.78rem;
+    font-weight: 500;
+    color: #f2f4fa;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+    background: linear-gradient(to top, rgba(0, 0, 0, 0.75), transparent);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* "Video" pill on video cards. */
+#stfg-grid .stfg-badge {
+    position: absolute;
+    top: 9px;
+    left: 9px;
+    z-index: 2;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 9px 4px 7px;
+    border-radius: 999px;
+    background: rgba(8, 9, 12, 0.62);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    color: #fff;
+    font-size: 0.68rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    pointer-events: none;
+}
+
+#stfg-grid .stfg-badge i {
+    font-size: 0.6rem;
+    color: var(--stfg-accent);
+}
+
+/* ---------- pagination ---------- */
+
+#stfg-grid .nGY2paginationRectangle,
+#stfg-grid .nGY2paginationRectangleCurrentPage {
+    border-radius: 999px;
+    transition: background 0.15s ease, transform 0.15s ease;
+}
+
+#stfg-grid .nGY2paginationRectangle:hover {
+    transform: translateY(-1px);
+}
+
+#stfg-grid .nGY2paginationRectangleCurrentPage {
+    background: var(--stfg-accent) !important;
+}
+
+/* ---------- empty state ---------- */
+
+#stfg-overlay .stfg-empty {
+    display: grid;
+    place-items: center;
+    align-content: center;
+    gap: 12px;
+    min-height: 240px;
+    color: var(--stfg-muted);
+    text-align: center;
+}
+
+#stfg-overlay .stfg-empty i {
+    font-size: 2.4rem;
+    color: var(--stfg-accent);
+    opacity: 0.6;
+}
+
+#stfg-overlay .stfg-empty p {
+    margin: 0;
+    font-size: 0.95rem;
+}
+
+/* ---------- small screens ---------- */
+
+@media (max-width: 600px) {
+    #stfg-overlay .stfg-bar {
+        padding: 12px 14px;
+        gap: 10px;
+    }
+
+    #stfg-overlay .stfg-count {
+        display: none;
+    }
+
+    #stfg-grid {
+        padding: 12px 14px 22px;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    #stfg-overlay,
+    #stfg-grid .stfg-card:not(.stfg-ready),
+    #stfg-grid .nGY2GThumbnail,
+    #stfg-grid .nGY2GThumbnailImg {
+        animation: none !important;
+        transition: none !important;
+    }
 }

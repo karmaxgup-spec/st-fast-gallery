@@ -5,7 +5,8 @@
 //   - renders only the visible page of thumbnails,
 //   - creates video posters on demand, with at most 2 running at once,
 //   - gives each poster a timeout so one bad file cannot block the gallery,
-//   - caches posters in the Cache Storage API (or memory on insecure origins).
+//   - caches posters in the Cache Storage API (or memory on insecure origins),
+//   - reveals every thumbnail itself once its image has loaded.
 
 import { characters, this_chid, getRequestHeaders, eventSource, event_types } from '../../../../script.js';
 import { selected_group } from '../../../group-chats.js';
@@ -19,7 +20,7 @@ const CONCURRENCY = 2;
 const POSTER_TIMEOUT_MS = 8000;
 const THUMB_HEIGHT = 150;
 const MAX_POSTER_SIDE = 225;
-const MAX_POSTER_RETRIES = 5;
+const MAX_THUMB_RETRIES = 10;
 
 const OVERLAY_ID = 'stfg-overlay';
 const GRID_ID = 'stfg-grid';
@@ -29,8 +30,9 @@ const BUILTIN_IDS = ['show_gallery_wand_button', 'show_char_gallery'];
 
 const PLACEHOLDER = 'data:image/svg+xml;utf8,' + encodeURIComponent(
     '<svg xmlns="http://www.w3.org/2000/svg" width="225" height="150">' +
-    '<rect width="100%" height="100%" fill="#222"/>' +
-    '<text x="50%" y="55%" fill="#ddd" font-size="48" text-anchor="middle" dominant-baseline="middle">&#9654;</text>' +
+    '<rect width="100%" height="100%" fill="#1b1e27"/>' +
+    '<circle cx="112" cy="75" r="26" fill="#2a2f3d"/>' +
+    '<polygon points="105,62 105,88 128,75" fill="#c9d3ff"/>' +
     '</svg>',
 );
 
@@ -160,33 +162,61 @@ async function getPosterBlob(src) {
     return blob;
 }
 
-/** Fills one video thumbnail with its poster. Retries briefly if nanogallery has not built the <img> yet. */
-async function fillPoster($thumb, src, attempt = 0) {
+// ---------- thumbnails ----------
+
+/**
+ * Runs fn with the thumbnail's <img>, once nanogallery has built it.
+ * nanogallery creates the image asynchronously, so retry for a short while.
+ */
+function withThumbImage($thumb, fn, attempt = 0) {
     const img = $thumb.find('img').first();
-    if (!img.length) {
-        if (attempt < MAX_POSTER_RETRIES) {
-            setTimeout(() => fillPoster($thumb, src, attempt + 1), 100);
-        }
+    if (img.length) {
+        fn(img);
         return;
     }
-    if (img.attr('data-stfg-src') === src) {
-        return;
+    if (attempt < MAX_THUMB_RETRIES) {
+        setTimeout(() => withThumbImage($thumb, fn, attempt + 1), 100);
     }
-    img.attr('data-stfg-src', src);
-    try {
-        const blob = await getPosterBlob(src);
-        const url = URL.createObjectURL(blob);
-        objectUrls.push(url);
-        // nanogallery starts thumbnails at opacity 0 and fades them in from its own
-        // load handler, which has already run by now, so reveal the poster here.
-        img.one('load', () => img.css('opacity', 1));
-        img.attr('src', url);
-        if (img.attr('data-src') !== undefined) {
-            img.attr('data-src', url);
+}
+
+/**
+ * nanogallery keeps each thumbnail at opacity 0 and fades it in from its own load
+ * handler. That handler can run before ours is attached, or never run for a cached
+ * image, which left every image thumbnail invisible. So reveal the thumbnail here.
+ */
+function revealWhenLoaded($thumb, $img) {
+    const el = $img[0];
+    const reveal = () => {
+        $thumb.addClass('stfg-ready');
+        $img.css('opacity', 1);
+    };
+    if (el.complete && el.naturalWidth > 0) {
+        reveal();
+    } else {
+        $img.one('load', reveal);
+        $img.one('error', () => $thumb.addClass('stfg-broken').addClass('stfg-ready'));
+    }
+}
+
+/** Fills one video thumbnail with its poster, replacing the placeholder once it is ready. */
+async function fillPoster($thumb, src) {
+    withThumbImage($thumb, async (img) => {
+        if (img.attr('data-stfg-src') === src) {
+            return;
         }
-    } catch (err) {
-        console.warn('[Fast Gallery] no poster for', src, err);
-    }
+        img.attr('data-stfg-src', src);
+        try {
+            const blob = await getPosterBlob(src);
+            const url = URL.createObjectURL(blob);
+            objectUrls.push(url);
+            img.attr('src', url);
+            if (img.attr('data-src') !== undefined) {
+                img.attr('data-src', url);
+            }
+        } catch (err) {
+            console.warn('[Fast Gallery] no poster for', src, err);
+        }
+    });
 }
 
 // ---------- data ----------
@@ -258,20 +288,54 @@ function closeOverlay() {
     }
 }
 
-function openOverlay(title) {
+function openOverlay(folderKey, count) {
     closeOverlay();
     const el = document.createElement('div');
     el.id = OVERLAY_ID;
     el.innerHTML = `
-        <div class="stfg-bar">
-            <span class="stfg-title"></span>
-            <div class="menu_button interactable stfg-close" title="Close"><i class="fa-solid fa-xmark fa-fw"></i></div>
-        </div>
+        <header class="stfg-bar">
+            <div class="stfg-heading">
+                <span class="stfg-kicker">Gallery</span>
+                <span class="stfg-title"></span>
+            </div>
+            <span class="stfg-count"></span>
+            <button type="button" class="stfg-close" title="Close (Esc)" aria-label="Close gallery">
+                <i class="fa-solid fa-xmark"></i>
+            </button>
+        </header>
         <div id="${GRID_ID}"></div>`;
-    el.querySelector('.stfg-title').textContent = title;
+    el.querySelector('.stfg-title').textContent = folderKey;
+    el.querySelector('.stfg-count').textContent = `${count} ${count === 1 ? 'item' : 'items'}`;
     el.querySelector('.stfg-close').addEventListener('click', closeOverlay);
     document.body.appendChild(el);
     return el;
+}
+
+function showEmptyState() {
+    $(`#${GRID_ID}`).append(
+        '<div class="stfg-empty"><i class="fa-regular fa-images"></i>' +
+        '<p>No images or videos in this folder yet.</p></div>',
+    );
+}
+
+function addVideoBadge($thumb) {
+    const layer = $thumb.find('.nGY2GThumbnailCustomLayer').first();
+    (layer.length ? layer : $thumb).append('<span class="stfg-badge"><i class="fa-solid fa-play"></i>Video</span>');
+}
+
+function onThumbnailInit($thumbnail, item) {
+    if (!item?.src) {
+        return;
+    }
+    const name = String(item.src).split('/').pop();
+    $thumbnail.addClass('stfg-card').attr('title', name);
+
+    withThumbImage($thumbnail, ($img) => revealWhenLoaded($thumbnail, $img));
+
+    if (isVideo(item.src)) {
+        addVideoBadge($thumbnail);
+        fillPoster($thumbnail, item.src);
+    }
 }
 
 async function openGallery() {
@@ -284,6 +348,13 @@ async function openGallery() {
     try {
         await ensureNanogallery();
         const files = await listGalleryFiles(folderKey);
+        openOverlay(folderKey, files.length);
+
+        if (files.length === 0) {
+            showEmptyState();
+            return;
+        }
+
         const base = `user/images/${await getSanitizedFilename(folderKey)}`;
         const items = files.map((file) => {
             const src = `${base}/${file}`;
@@ -295,13 +366,15 @@ async function openGallery() {
             };
         });
 
-        openOverlay(`Gallery: ${folderKey} (${items.length})`);
-
-        const maxRows = Math.max(1, Math.min(10, Math.floor((window.innerHeight * 0.9 - 75) / THUMB_HEIGHT)));
+        const maxRows = Math.max(1, Math.min(10, Math.floor((window.innerHeight * 0.9 - 110) / THUMB_HEIGHT)));
         $(`#${GRID_ID}`).nanogallery2({
             items,
             thumbnailWidth: 'auto',
             thumbnailHeight: THUMB_HEIGHT,
+            thumbnailBorderHorizontal: 0,
+            thumbnailBorderVertical: 0,
+            thumbnailGutterWidth: 14,
+            thumbnailGutterHeight: 14,
             paginationVisiblePages: 5,
             paginationMaxLinesPerPage: 2,
             galleryMaxRows: maxRows,
@@ -309,15 +382,7 @@ async function openGallery() {
             galleryNavigationOverlayButtons: true,
             galleryPaginationMode: 'rectangles',
             galleryDisplayMode: 'pagination',
-            fnThumbnailInit: function ($thumbnail, item) {
-                if (!item?.src) {
-                    return;
-                }
-                $thumbnail.attr('title', String(item.src).split('/').pop());
-                if (isVideo(item.src)) {
-                    fillPoster($thumbnail, item.src);
-                }
-            },
+            fnThumbnailInit: onThumbnailInit,
         });
     } catch (err) {
         console.error('[Fast Gallery]', err);
